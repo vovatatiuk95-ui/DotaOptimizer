@@ -1,0 +1,280 @@
+import psutil
+import threading
+import tkinter as tk
+from PIL import Image
+import os
+import tempfile
+import shutil
+import time
+import customtkinter as ctk
+import pystray
+from pystray import MenuItem as item
+import requests
+import re
+import GPUtil
+
+# ================== Настройки ==================
+ctk.set_appearance_mode("Dark")
+ctk.set_default_color_theme("dark-blue")
+
+# ================== Главное окно ==================
+root = ctk.CTk()
+root.title("Dota 2 Optimizer")
+root.geometry("500x500")
+root.resizable(False, False)
+
+# ================== Темы ==================
+theme_colors = {
+    "red": {"bg_r": 30, "bg_g": 10, "bg_b": 10, "accent": "#ffffff", "button": "#ffffff"},
+    "black": {"bg_r": 20, "bg_g": 20, "bg_b": 20, "accent": "#ff2d2d", "button": "#ff2d2d"}
+}
+current_theme = "red"
+
+# ================== Живой фон ==================
+canvas = tk.Canvas(root, width=500, height=500, highlightthickness=0)
+canvas.place(x=0, y=0)
+color_phase = 0
+def animate_background():
+    global color_phase
+    colors = theme_colors[current_theme]
+    r = int(colors["bg_r"] + 20 * (1 + tk.sin(color_phase)))
+    g = int(colors["bg_g"] + 5 * (1 + tk.sin(color_phase)))
+    b = int(colors["bg_b"] + 5 * (1 + tk.sin(color_phase)))
+    canvas.configure(bg=f'#{r:02x}{g:02x}{b:02x}')
+    color_phase += 0.05
+    root.after(50, animate_background)
+animate_background()
+
+# ================== CPU / RAM ==================
+cpu_label = ctk.CTkLabel(root, text="CPU:", font=("Arial", 14), text_color=theme_colors[current_theme]["button"])
+cpu_label.place(x=20, y=20)
+cpu_bar = ctk.CTkProgressBar(root, width=300, progress_color=theme_colors[current_theme]["accent"])
+cpu_bar.place(x=80, y=25)
+
+ram_label = ctk.CTkLabel(root, text="RAM:", font=("Arial", 14), text_color=theme_colors[current_theme]["button"])
+ram_label.place(x=20, y=60)
+ram_bar = ctk.CTkProgressBar(root, width=300, progress_color=theme_colors[current_theme]["accent"])
+ram_bar.place(x=80, y=65)
+
+def update_system():
+    cpu = psutil.cpu_percent()
+    ram = psutil.virtual_memory().percent
+    cpu_bar.set(cpu / 100)
+    ram_bar.set(ram / 100)
+    root.after(2000, update_system)
+update_system()
+
+# ================== Список процессов ==================
+process_frame = ctk.CTkFrame(root, width=460, height=150)
+process_frame.place(x=20, y=100)
+process_list = tk.Listbox(process_frame, width=60, height=8)
+process_list.pack(padx=5, pady=5)
+
+def update_processes():
+    process_list.delete(0, tk.END)
+    for proc in psutil.process_iter(['pid', 'name', 'cpu_percent']):
+        try:
+            process_list.insert(tk.END, f"{proc.info['name']} (CPU: {proc.info['cpu_percent']}%)")
+        except:
+            continue
+    root.after(3000, update_processes)
+update_processes()
+
+def kill_process():
+    selection = process_list.curselection()
+    if selection:
+        index = selection[0]
+        proc_name = process_list.get(index).split(" ")[0]
+        for proc in psutil.process_iter(['name', 'pid']):
+            if proc.info['name'] == proc_name:
+                try:
+                    proc.kill()
+                    break
+                except:
+                    pass
+        update_processes()
+
+kill_btn = ctk.CTkButton(root, text="Завершить процесс", command=kill_process,
+                         fg_color=theme_colors[current_theme]["button"], text_color="black")
+kill_btn.place(x=20, y=260)
+
+# ================== Очистка temp ==================
+def clean_temp():
+    temp_dirs = [tempfile.gettempdir(), os.path.join(os.getenv('LOCALAPPDATA'), 'Temp')]
+    running_processes = [p.info['name'] for p in psutil.process_iter(['name'])]
+    for temp_dir in temp_dirs:
+        if os.path.exists(temp_dir):
+            for filename in os.listdir(temp_dir):
+                file_path = os.path.join(temp_dir, filename)
+                try:
+                    if any(proc in file_path for proc in running_processes):
+                        continue
+                    if os.path.isfile(file_path):
+                        os.remove(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
+                except:
+                    continue
+
+clean_btn = ctk.CTkButton(root, text="Очистить временные файлы", command=clean_temp,
+                          fg_color=theme_colors[current_theme]["button"], text_color="black")
+clean_btn.place(x=200, y=260)
+
+# ================== Автоочистка каждые 5 минут ==================
+def auto_clean_loop():
+    while True:
+        time.sleep(300)
+        clean_temp()
+threading.Thread(target=auto_clean_loop, daemon=True).start()
+
+# ================== Переключение темы ==================
+def switch_theme():
+    global current_theme
+    current_theme = "black" if current_theme == "red" else "red"
+    cpu_bar.configure(progress_color=theme_colors[current_theme]["accent"])
+    ram_bar.configure(progress_color=theme_colors[current_theme]["accent"])
+    cpu_label.configure(text_color=theme_colors[current_theme]["button"])
+    ram_label.configure(text_color=theme_colors[current_theme]["button"])
+    kill_btn.configure(fg_color=theme_colors[current_theme]["button"])
+    clean_btn.configure(fg_color=theme_colors[current_theme]["button"])
+    theme_btn.configure(fg_color=theme_colors[current_theme]["button"])
+    check_btn.configure(fg_color=theme_colors[current_theme]["button"])
+    kill_bg_btn.configure(fg_color=theme_colors[current_theme]["button"])
+
+theme_btn = ctk.CTkButton(root, text="Переключить тему", command=switch_theme,
+                          fg_color=theme_colors[current_theme]["button"], text_color="black")
+theme_btn.place(x=360, y=260)
+
+# ================== Проверка Steam игр ==================
+entry_game = ctk.CTkEntry(root, placeholder_text="Введите название игры Steam", width=300)
+entry_game.place(x=20, y=330)
+result_label = ctk.CTkLabel(root, text="", font=("Arial", 12), text_color=theme_colors[current_theme]["button"])
+result_label.place(x=20, y=360)
+bg_process_label = ctk.CTkLabel(root, text="", font=("Arial", 10), text_color=theme_colors[current_theme]["button"])
+bg_process_label.place(x=20, y=390)
+
+# ================== Проверка игры ==================
+def check_game():
+    game_name = entry_game.get().strip()
+    if not game_name:
+        result_label.configure(text="Введите название игры")
+        bg_process_label.configure(text="")
+        return
+    try:
+        response = requests.get("https://api.steampowered.com/ISteamApps/GetAppList/v2/")
+        games = response.json()['applist']['apps']
+        appid = None
+        for g in games:
+            if game_name.lower() in g['name'].lower():
+                appid = g['appid']
+                break
+        if not appid:
+            result_label.configure(text="Игра не найдена в Steam")
+            bg_process_label.configure(text="")
+            return
+
+        details = requests.get(f"https://store.steampowered.com/api/appdetails?appids={appid}").json()
+        reqs = details[str(appid)]['data'].get('pc_requirements', {}).get('minimum', '')
+        if not reqs:
+            result_label.configure(text="Системные требования не найдены")
+            bg_process_label.configure(text="")
+            return
+
+        # Проверка ресурсов
+        ram_gb = psutil.virtual_memory().total / (1024**3)
+        ram_pass = cpu_pass = gpu_pass = True
+        ram_req = cpu_req = gpu_req = None
+
+        match = re.search(r'(\d+)\s*GB', reqs)
+        if match:
+            ram_req = int(match.group(1))
+            ram_pass = ram_gb >= ram_req
+
+        cpu_freq = psutil.cpu_freq().max if psutil.cpu_freq() else 2.0
+        match = re.search(r'(\d+(\.\d+)?)\s*GHz', reqs)
+        if match:
+            cpu_req = float(match.group(1))
+            cpu_pass = cpu_freq >= cpu_req
+
+        gpus = GPUtil.getGPUs()
+        total_vram = sum([gpu.memoryTotal for gpu in gpus]) if gpus else 0
+        match = re.search(r'(\d+)\s*GB.*(Video|GPU|Graphics)', reqs, re.IGNORECASE)
+        if match:
+            gpu_req = int(match.group(1))
+            gpu_pass = total_vram >= gpu_req
+
+        if ram_pass and cpu_pass and gpu_pass:
+            result_label.configure(text=f"Игра '{game_name}' скорее всего пойдёт ✅")
+        else:
+            result_label.configure(text=f"Игра '{game_name}' может лагать ⚠️")
+
+        # Фоновые процессы
+        global last_high_usage
+        last_high_usage = []
+        for proc in psutil.process_iter(['name', 'cpu_percent', 'memory_info']):
+            try:
+                cpu = proc.info['cpu_percent']
+                ram = proc.info['memory_info'].rss / (1024**2)
+                show_proc = False
+                if cpu_req and not cpu_pass and cpu > 3:
+                    show_proc = True
+                if ram_req and not ram_pass and ram > 200:
+                    show_proc = True
+                if show_proc:
+                    last_high_usage.append(proc)
+            except:
+                continue
+
+        if last_high_usage:
+            bg_process_label.configure(
+                text="Фоновые процессы, мешающие игре:\n" +
+                     "\n".join([f"{p.info['name']} (CPU: {p.info['cpu_percent']}%, RAM: {int(p.info['memory_info'].rss / (1024**2))} MB)" for p in last_high_usage[:8]])
+            )
+        else:
+            bg_process_label.configure(text="Фоновых процессов, мешающих игре, не найдено")
+
+    except Exception as e:
+        result_label.configure(text="Ошибка подключения к Steam или обработка требований")
+        bg_process_label.configure(text="")
+
+check_btn = ctk.CTkButton(root, text="Проверить игру", command=check_game,
+                          fg_color=theme_colors[current_theme]["button"], text_color="black")
+check_btn.place(x=330, y=330)
+
+# ================== Завершение фоновых процессов ==================
+def kill_high_usage_processes():
+    global last_high_usage
+    for proc in last_high_usage:
+        try:
+            name = proc.info['name']
+            if name.lower() not in ['system', 'explorer.exe']:
+                proc.kill()
+        except:
+            continue
+    update_processes()
+    bg_process_label.configure(text="Фоновые процессы завершены ✅")
+    last_high_usage = []
+
+kill_bg_btn = ctk.CTkButton(root, text="Завершить мешающие процессы",
+                             command=kill_high_usage_processes,
+                             fg_color=theme_colors[current_theme]["button"], text_color="black")
+kill_bg_btn.place(x=20, y=450)
+
+# ================== Трей ==================
+def quit_program(icon, item):
+    icon.stop()
+    root.destroy()
+def show_program(icon, item):
+    icon.stop()
+    root.deiconify()
+def hide_window():
+    root.withdraw()
+    image = Image.new('RGB', (64, 64), color='red')
+    menu = (item('Открыть', show_program), item('Выход', quit_program))
+    icon = pystray.Icon("Dota2Optimizer", image, "Dota 2 Optimizer", menu)
+    icon.run()
+root.protocol("WM_DELETE_WINDOW", hide_window)
+
+# ================== Запуск ==================
+last_high_usage = []
+root.mainloop()
